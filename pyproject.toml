@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "ironclad-guardian"
-version = "0.1.0"
+version = "0.3.0"
 description = "Event-sourced codebase diagnosis and patch proposals"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.10,<3"]
+dependencies = ["pydantic>=2.10,<3", "fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1"]
 [project.optional-dependencies]
 redis = ["redis>=5,<7"]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.9", "mypy>=1.14"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.9", "mypy>=1.14", "httpx>=0.28"]
 [project.scripts]
 ironclad = "ironclad.cli:main"
 [tool.setuptools.packages.find]

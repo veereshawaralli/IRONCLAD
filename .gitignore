@@ -11,3 +11,7 @@ htmlcov/
 coverage.xml
 
 .sentinel/
+node_modules/
+.next/
+out/
+*.tsbuildinfo
