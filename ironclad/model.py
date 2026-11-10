@@ -1,6 +1,7 @@
 import json
 import os
 import urllib.request
+from collections.abc import Callable
 from typing import TypeVar
 
 from .schema import StrictModel
@@ -11,7 +12,14 @@ T = TypeVar("T", bound=StrictModel)
 class HostedModel:
     """OpenAI-compatible chat API. Calls have a conservative preflight reservation."""
 
-    def __init__(self, calls: int, budget: float, max_tokens: int):
+    def __init__(
+        self,
+        calls: int,
+        budget: float,
+        max_tokens: int,
+        reserve: Callable[[float], None] | None = None,
+    ):
+        self.reserve = reserve
         self.remaining = calls
         self.budget = budget
         self.max_tokens = max_tokens
@@ -35,6 +43,8 @@ class HostedModel:
             ) / 1000000
             if self.remaining <= 0 or reserve > self.budget:
                 raise ValueError("Model call or configured cost budget exhausted")
+            if self.reserve:
+                self.reserve(reserve)
             self.remaining -= 1
             self.budget -= reserve
             body = json.dumps(

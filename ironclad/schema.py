@@ -13,6 +13,8 @@ class Agent(StrEnum):
     DIAGNOSTICIAN = "diagnostician"
     SURGEON = "surgeon"
     SUPERVISOR = "supervisor"
+    VERIFIER = "verifier"
+    REPORTER = "reporter"
 
 
 class Incident(StrictModel):
@@ -52,7 +54,17 @@ class Message(StrictModel):
     run_id: str
     seq: int = Field(ge=1)
     agent: Agent
-    kind: Literal["incident", "diagnosis", "proposal", "escalated"]
+    kind: Literal[
+        "incident",
+        "diagnosis",
+        "proposal",
+        "escalated",
+        "verification",
+        "report",
+        "approved",
+        "pull_request",
+        "reservation",
+    ]
     payload: dict[str, object]
     timestamp: str
     duration_ms: int = Field(ge=0)
@@ -60,8 +72,22 @@ class Message(StrictModel):
 
 class Guardrails(StrictModel):
     max_files: int = Field(default=5, ge=1, le=5)
-    max_steps: int = Field(default=3, ge=1, le=3)
+    max_steps: int = Field(default=3, ge=1, le=20)
     max_input_chars: int = Field(default=24000, ge=1000, le=100000)
     max_output_tokens: int = Field(default=1200, ge=128, le=4000)
     max_model_calls: int = Field(default=4, ge=1, le=6)
     dollar_budget: float = Field(default=0.50, gt=0)
+
+
+class Verification(StrictModel):
+    passed: bool
+    baseline_failures: list[str]
+    remaining_failures: list[str]
+    checks: dict[str, bool]
+    output: str
+
+
+class FleetPolicy(Guardrails):
+    max_steps: int = Field(default=20, ge=1, le=30)
+    max_attempts: int = Field(default=3, ge=1, le=3)
+    timeout_seconds: int = Field(default=60, ge=5, le=120)

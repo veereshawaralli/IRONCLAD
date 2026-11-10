@@ -11,6 +11,7 @@ class Store:
         self.db = sqlite3.connect(path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS charges(run_id TEXT, amount REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, input TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(run_id TEXT, seq INTEGER, message TEXT NOT NULL,
           PRIMARY KEY(run_id, seq));
@@ -48,3 +49,18 @@ class Store:
         if not row:
             raise ValueError("Unknown run")
         return dict(json.loads(row[0]))
+
+    def reserve(self, run_id: str, amount: float, cap: float, calls: int) -> None:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            spent, used = self.db.execute(
+                "SELECT COALESCE(SUM(amount),0),COUNT(*) FROM charges WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if spent + amount > cap or used >= calls:
+                raise ValueError("Durable model budget exhausted")
+            self.db.execute("INSERT INTO charges VALUES (?,?)", (run_id, amount))
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
