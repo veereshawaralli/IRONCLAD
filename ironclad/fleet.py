@@ -26,7 +26,7 @@ class Sandbox(Protocol):
 
 
 class Fleet:
-    def __init__(self, store: Store, sandbox: Sandbox):
+    def __init__(self, store: Store, sandbox: Sandbox | None):
         self.store, self.sandbox = store, sandbox
 
     def emit(
@@ -165,6 +165,8 @@ class Fleet:
                     step,
                 )
                 step = time.monotonic()
+                if self.sandbox is None:
+                    raise ValueError("No isolated verifier configured")
                 result = self.sandbox.verify(repo, proposal)
                 self.emit(
                     run_id,

@@ -210,7 +210,7 @@ def create_app() -> FastAPI:
                 "repo": str(repo),
             },
         )
-        fleet = Fleet(s, None)  # type: ignore[arg-type]
+        fleet = Fleet(s, None)
         rows = [
             (
                 Agent.WATCHER,
@@ -306,6 +306,104 @@ def create_app() -> FastAPI:
             )
         s.db.close()
         return {"id": rid}
+
+    @app.post("/api/runs/{rid}/approve", dependencies=[Depends(authenticate)])
+    def approve(rid: str, body: dict[str, bool]) -> dict[str, bool]:
+        from .review import Review
+
+        s = store()
+        try:
+            Review(s).approve(rid, body.get("confirmed", False))
+            return {"approved": True}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        finally:
+            s.db.close()
+
+    @app.post("/api/runs/{rid}/publish", dependencies=[Depends(authenticate)])
+    def publish(rid: str) -> dict[str, str]:
+        from .github import GitHub
+        from .review import Review
+
+        s = store()
+        try:
+            return {"url": Review(s).publish(rid, GitHub())}
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(
+                409,
+                str(exc)
+                if type(exc) is ValueError
+                else "Configure GitHub repository and token on the server",
+            ) from None
+        finally:
+            s.db.close()
+
+    @app.post("/api/webhooks/github")
+    async def webhook(request: Request) -> dict[str, object]:
+        import json
+
+        signing = os.environ.get("IRONCLAD_WEBHOOK_SECRET", "")
+        if len(signing) < 24:
+            raise HTTPException(503, "Webhook signing secret not configured")
+        raw = await request.body()
+        if len(raw) > 1000000:
+            raise HTTPException(413, "Webhook payload too large")
+        expected = (
+            "sha256=" + hmac.new(signing.encode(), raw, hashlib.sha256).hexdigest()
+        )
+        if not hmac.compare_digest(
+            request.headers.get("X-Hub-Signature-256", ""), expected
+        ):
+            raise HTTPException(401, "Invalid webhook signature")
+        payload = json.loads(raw)
+        if payload.get("repository", {}).get("full_name") != os.environ.get(
+            "IRONCLAD_GITHUB_REPO"
+        ):
+            raise HTTPException(403, "Webhook repository outside configured scope")
+        if (
+            request.headers.get("X-GitHub-Event") != "check_run"
+            or payload.get("action") != "completed"
+            or payload.get("check_run", {}).get("conclusion")
+            not in {"failure", "timed_out"}
+        ):
+            return {"ignored": True}
+        delivery = request.headers.get("X-GitHub-Delivery", "")
+        if not delivery or len(delivery) > 128:
+            raise HTTPException(422, "Delivery identifier required")
+        s = store()
+        try:
+            s.db.execute(
+                "CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,run_id TEXT)"
+            )
+            previous = s.db.execute(
+                "SELECT run_id FROM deliveries WHERE id=?", (delivery,)
+            ).fetchone()
+            if previous:
+                return {"id": previous[0], "duplicate": True}
+            check = payload["check_run"]
+            output = check.get("output") or {}
+            log = (
+                str(output.get("title", "CI failure"))
+                + "\n"
+                + str(output.get("summary", ""))
+            )[:24000]
+            rid = uuid4().hex
+            s.begin(
+                rid,
+                {
+                    "repo": str(repo),
+                    "log": log,
+                    "mode": "hosted",
+                    "policy": FleetPolicy.model_validate(s.settings()).model_dump(),
+                    "head_sha": check.get("head_sha"),
+                },
+            )
+            with s.db:
+                s.db.execute("INSERT INTO deliveries VALUES(?,?)", (delivery, rid))
+                s.db.execute("INSERT INTO jobs VALUES(?,'queued')", (rid,))
+            return {"id": rid}
+        finally:
+            s.db.close()
 
     output = Path(__file__).resolve().parents[1] / "web" / "out"
     if output.exists():

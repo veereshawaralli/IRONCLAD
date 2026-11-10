@@ -71,3 +71,37 @@ def test_knowledge(client):
         client.get("/api/knowledge?q=average").json()["results"][0]["path"]
         == "stats.py"
     )
+
+
+def test_webhook_signature_and_deduplication(client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+
+    monkeypatch.setenv("IRONCLAD_WEBHOOK_SECRET", "signing-secret-0123456789012345")
+    monkeypatch.setenv("IRONCLAD_GITHUB_REPO", "example/repo")
+    body = json.dumps(
+        {
+            "repository": {"full_name": "example/repo"},
+            "action": "completed",
+            "check_run": {
+                "conclusion": "failure",
+                "head_sha": "abc",
+                "output": {"summary": "ZeroDivisionError"},
+            },
+        }
+    ).encode()
+    assert client.post("/api/webhooks/github", content=body).status_code == 401
+    headers = {
+        "X-Hub-Signature-256": "sha256="
+        + hmac.new(
+            b"signing-secret-0123456789012345", body, hashlib.sha256
+        ).hexdigest(),
+        "X-GitHub-Event": "check_run",
+        "X-GitHub-Delivery": "delivery-1",
+    }
+    first = client.post("/api/webhooks/github", content=body, headers=headers)
+    second = client.post("/api/webhooks/github", content=body, headers=headers)
+    assert first.status_code == 200
+    assert second.json()["duplicate"]
+    assert first.json()["id"] == second.json()["id"]
