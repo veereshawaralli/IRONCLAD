@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "default": "log",
+      "enum": [
+        "log",
+        "ci",
+        "issue"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "severity",
+    "summary",
+    "fingerprint"
+  ],
+  "title": "Incident",
+  "type": "object"
+}

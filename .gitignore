@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ironclad/
+*.egg-info/
+.coverage
+.env
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+
+.sentinel/

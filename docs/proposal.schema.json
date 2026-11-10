@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "Edit": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "old": {
+          "minLength": 1,
+          "title": "Old",
+          "type": "string"
+        },
+        "new": {
+          "title": "New",
+          "type": "string"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "old",
+        "new",
+        "rationale"
+      ],
+      "title": "Edit",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "edits": {
+      "items": {
+        "$ref": "#/$defs/Edit"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Edits",
+      "type": "array"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "edits",
+    "summary"
+  ],
+  "title": "Proposal",
+  "type": "object"
+}

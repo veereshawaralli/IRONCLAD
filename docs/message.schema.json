@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "Agent": {
+      "enum": [
+        "watcher",
+        "diagnostician",
+        "surgeon",
+        "supervisor"
+      ],
+      "title": "Agent",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "agent": {
+      "$ref": "#/$defs/Agent"
+    },
+    "kind": {
+      "enum": [
+        "incident",
+        "diagnosis",
+        "proposal",
+        "escalated"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "timestamp": {
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "duration_ms": {
+      "minimum": 0,
+      "title": "Duration Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "agent",
+    "kind",
+    "payload",
+    "timestamp",
+    "duration_ms"
+  ],
+  "title": "Message",
+  "type": "object"
+}
