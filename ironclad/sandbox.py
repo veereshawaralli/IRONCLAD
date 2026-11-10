@@ -12,17 +12,19 @@ from .schema import Proposal, Verification
 
 IMAGE = "ironclad-sandbox:local"
 CHECK = r"""import json, pathlib, subprocess, xml.etree.ElementTree as ET
-r = subprocess.run(["python", "-m", "pytest", "-q", "--junitxml=/tmp/report.xml"], capture_output=True, text=True, timeout=45)
+r = subprocess.run(["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--junitxml=/tmp/report.xml"], capture_output=True, text=True, timeout=45)
 failures = []
 if pathlib.Path("/tmp/report.xml").exists():
     for case in ET.parse("/tmp/report.xml").iter("testcase"):
         if case.find("failure") is not None or case.find("error") is not None:
             failures.append(case.attrib.get("classname", "") + "::" + case.attrib.get("name", ""))
 checks = {}
-for name, cmd in {"lint": ["ruff", "check", "--no-cache", "."], "types": ["mypy", "--ignore-missing-imports", "--cache-dir", "/tmp/mypy", "."], "security": ["bandit", "-q", "-r", ".", "-s", "B101"]}.items():
+outputs = [r.stdout+r.stderr]
+for name, cmd in {"lint": ["ruff", "check", "--isolated", "--select", "E4,E7,E9,F,I", "--no-cache", "."], "types": ["mypy", "--ignore-missing-imports", "--cache-dir", "/tmp/mypy", "."], "security": ["bandit", "-q", "-r", ".", "-s", "B101"]}.items():
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     checks[name] = result.returncode == 0
-print(json.dumps({"test_code": r.returncode, "failures": failures, "checks": checks, "output": (r.stdout+r.stderr)[-8000:]}))
+    outputs.append(name + ":\n" + result.stdout + result.stderr)
+print(json.dumps({"test_code": r.returncode, "failures": failures, "checks": checks, "output": "\n".join(outputs)[-16000:]}))
 """
 
 
