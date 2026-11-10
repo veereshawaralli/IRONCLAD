@@ -5,6 +5,8 @@ import os
 import secrets
 import shutil
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -13,6 +15,7 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Request,
     Response,
     WebSocket,
@@ -23,8 +26,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .fleet import Fleet
 from .knowledge import retrieve
+from .redaction import redact
 from .schema import Agent, FleetPolicy
+from .sessions import Sessions
 from .store import Store
+from .streaming import EventHub
 
 
 class RunRequest(BaseModel):
@@ -38,23 +44,29 @@ class Login(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="IRONCLAD", version="0.3.0")
     db = Path(os.environ.get("IRONCLAD_DB", ".ironclad/events.db"))
+    hub = EventHub(db)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        await hub.start()
+        try:
+            yield
+        finally:
+            await hub.stop()
+
+    app = FastAPI(title="IRONCLAD", version="1.0.0", lifespan=lifespan)
     repo = Path(os.environ.get("IRONCLAD_REPO", "examples/broken_repo")).resolve()
     secret = os.environ.get("IRONCLAD_ADMIN_TOKEN", "")
     if len(secret) < 24:
         raise RuntimeError("Set IRONCLAD_ADMIN_TOKEN to at least 24 random characters")
-    cookie = hmac.new(
-        secret.encode(), b"ironclad-session-v1", hashlib.sha256
-    ).hexdigest()
+    sessions = Sessions(db, secret)
 
     def store() -> Store:
         return Store(db)
 
     def authenticate(request: Request) -> None:
-        if not secrets.compare_digest(
-            request.cookies.get("ironclad_session", ""), cookie
-        ):
+        if not sessions.valid(request.cookies.get("ironclad_session", "")):
             raise HTTPException(401, "Sign in required")
         if (
             request.method not in {"GET", "HEAD"}
@@ -62,18 +74,11 @@ def create_app() -> FastAPI:
         ):
             raise HTTPException(403, "Missing request intent")
 
+    from .http_limits import BodyLimit
+
+    app.add_middleware(BodyLimit, max_bytes=1000000)
+
     failures: dict[str, list[float]] = {}
-
-    @app.middleware("http")
-    async def request_limits(request: Request, call_next: object) -> Response:
-        from typing import Any, cast
-
-        from starlette.responses import JSONResponse
-
-        length = request.headers.get("content-length", "0")
-        if not length.isdigit() or int(length) > 1000000:
-            return JSONResponse({"detail": "Request too large"}, status_code=413)
-        return cast(Response, await cast(Any, call_next)(request))
 
     @app.post("/api/login")
     def login(body: Login, response: Response, request: Request) -> dict[str, bool]:
@@ -90,7 +95,7 @@ def create_app() -> FastAPI:
         failures.pop(address, None)
         response.set_cookie(
             "ironclad_session",
-            cookie,
+            sessions.issue(),
             httponly=True,
             samesite="strict",
             secure=os.environ.get("IRONCLAD_SECURE_COOKIE") == "1",
@@ -99,7 +104,8 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/logout", dependencies=[Depends(authenticate)])
-    def logout(response: Response) -> dict[str, bool]:
+    def logout(response: Response, request: Request) -> dict[str, bool]:
+        sessions.revoke(request.cookies.get("ironclad_session", ""))
         response.delete_cookie("ironclad_session")
         return {"ok": True}
 
@@ -114,10 +120,12 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/runs", dependencies=[Depends(authenticate)])
-    def runs() -> list[dict[str, object]]:
+    def runs(
+        limit: int = Query(200, ge=1, le=200), offset: int = Query(0, ge=0, le=1000000)
+    ) -> list[dict[str, object]]:
         with_store = store()
         try:
-            return with_store.list_runs()
+            return with_store.list_runs(limit, offset)
         finally:
             with_store.db.close()
 
@@ -133,7 +141,7 @@ def create_app() -> FastAPI:
                 rid,
                 {
                     "repo": str(repo),
-                    "log": body.log,
+                    "log": redact(body.log),
                     "mode": body.mode,
                     "policy": policy.model_dump(),
                 },
@@ -160,29 +168,73 @@ def create_app() -> FastAPI:
 
     @app.websocket("/api/runs/{rid}/stream")
     async def stream(ws: WebSocket, rid: str, after: int = 0) -> None:
-        if not secrets.compare_digest(ws.cookies.get("ironclad_session", ""), cookie):
+        if not await asyncio.to_thread(
+            sessions.valid, ws.cookies.get("ironclad_session", "")
+        ):
             await ws.close(code=4401)
             return
         origin = ws.headers.get("origin")
         if origin and origin.split("://", 1)[-1] != ws.headers.get("host"):
             await ws.close(code=4403)
             return
-        await ws.accept()
         try:
-            cursor = max(after, 0)
+            queue, replay = await hub.subscribe(rid, max(after, 0))
+        except ValueError:
+            await ws.close(code=4404)
+            return
+        await ws.accept()
+        cursor = max(after, 0)
+
+        async def disconnected() -> None:
             while True:
-                s = store()
+                if (await ws.receive())["type"] == "websocket.disconnect":
+                    return
+
+        closed = asyncio.create_task(disconnected())
+        try:
+            for event in replay:
+                await ws.send_json(event.model_dump())
+                cursor = event.seq
+            await ws.send_json({"heartbeat": True, "cursor": cursor})
+            while True:
                 try:
-                    batch = [e for e in s.events(rid) if e.seq > cursor]
-                finally:
-                    s.db.close()
-                for event in batch:
-                    await ws.send_json(event.model_dump())
-                    cursor = event.seq
-                await ws.send_json({"heartbeat": True, "cursor": cursor})
-                await asyncio.sleep(0.15)
+                    waiting = asyncio.create_task(queue.get())
+                    try:
+                        done, _ = await asyncio.wait(
+                            {waiting, closed},
+                            timeout=15,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if closed in done:
+                            return
+                        if waiting not in done:
+                            raise TimeoutError
+                        incoming = waiting.result()
+                    finally:
+                        if not waiting.done():
+                            waiting.cancel()
+                except TimeoutError:
+                    if not await asyncio.to_thread(
+                        sessions.valid, ws.cookies.get("ironclad_session", "")
+                    ):
+                        await ws.close(code=4401)
+                        return
+                    await ws.send_json({"heartbeat": True, "cursor": cursor})
+                    continue
+                if incoming is None:
+                    await ws.close(
+                        code=1013,
+                        reason="Slow client: reconnect with last event sequence",
+                    )
+                    return
+                if incoming.seq > cursor:
+                    await ws.send_json(incoming.model_dump())
+                    cursor = incoming.seq
         except (WebSocketDisconnect, RuntimeError):
             return
+        finally:
+            closed.cancel()
+            hub.unsubscribe(rid, queue)
 
     @app.get("/api/knowledge", dependencies=[Depends(authenticate)])
     def knowledge(q: str = "average") -> dict[str, object]:
@@ -418,7 +470,7 @@ def create_app() -> FastAPI:
                 rid,
                 {
                     "repo": str(repo),
-                    "log": log,
+                    "log": redact(log),
                     "mode": "hosted",
                     "policy": FleetPolicy.model_validate(s.settings()).model_dump(),
                     "head_sha": check.get("head_sha"),
@@ -426,7 +478,7 @@ def create_app() -> FastAPI:
             )
             with s.db:
                 s.db.execute("INSERT INTO deliveries VALUES(?,?)", (delivery, rid))
-                s.db.execute("INSERT INTO jobs VALUES(?,'queued')", (rid,))
+                s.db.execute("INSERT INTO jobs(id,status) VALUES(?,'queued')", (rid,))
             return {"id": rid}
         finally:
             s.db.close()

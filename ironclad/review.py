@@ -39,7 +39,8 @@ class Review:
         if self.store.input(rid).get("mode") == "simulation":
             raise ValueError("Simulation publication blocked")
         # Serializes one publisher per run. Ambiguous failures require explicit retry.
-        with self.store.db:
+        self.store.db.execute("BEGIN IMMEDIATE")
+        try:
             self.store.db.execute(
                 "CREATE TABLE IF NOT EXISTS publications(run_id TEXT PRIMARY KEY,status TEXT NOT NULL)"
             )
@@ -54,6 +55,10 @@ class Review:
                 "INSERT INTO publications VALUES(?,'publishing') ON CONFLICT(run_id) DO UPDATE SET status='publishing'",
                 (rid,),
             )
+            self.store.db.commit()
+        except BaseException:
+            self.store.db.rollback()
+            raise
         try:
             patch = [e for e in events if e.kind == "proposal"][-1].payload
             proposal = Proposal.model_validate(

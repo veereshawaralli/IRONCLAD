@@ -9,7 +9,9 @@ from typing import Protocol
 
 from .knowledge import retrieve
 from .model import HostedModel
+from .redaction import redact
 from .repository import render_patch
+from .resilience import ProviderError
 from .schema import (
     Agent,
     Diagnosis,
@@ -38,30 +40,38 @@ class Fleet:
         payload: dict[str, object],
         started: float,
     ) -> None:
-        self.store.append(
+        self.store.record(
             Message.model_validate(
                 {
                     "run_id": run_id,
-                    "seq": len(self.store.events(run_id)) + 1,
+                    "seq": 1,
                     "agent": agent,
                     "kind": kind,
                     "payload": payload,
                     "timestamp": datetime.now(UTC).isoformat(),
                     "duration_ms": int((time.monotonic() - started) * 1000),
                 }
-            )
+            ),
+            unique_kind=kind in {"approved", "pull_request"},
         )
 
     def execute(self, run_id: str) -> None:
         started = time.monotonic()
         try:
             data = self.store.input(run_id)
-            if self.store.events(run_id):
+            previous = self.store.events(run_id)
+            if previous and previous[-1].kind in {
+                "report",
+                "escalated",
+                "pull_request",
+            }:
+                return
+            if previous:
                 raise ValueError(
                     "Interrupted fleet runs are not replayed automatically; submit a new budgeted run"
                 )
             repo = Path(str(data["repo"]))
-            log = str(data["log"])
+            log = redact(str(data["log"]))
             policy = FleetPolicy.model_validate(data.get("policy", {}))
             if len(log) > policy.max_input_chars:
                 raise ValueError("Input limit exceeded")
@@ -208,6 +218,19 @@ class Fleet:
                 ]
             raise ValueError("Self-correction attempt limit reached")
         except Exception as exc:  # noqa: BLE001 -- workflow termination boundary
+            if isinstance(exc, ProviderError):
+                self.emit(
+                    run_id,
+                    Agent.SUPERVISOR,
+                    "escalated",
+                    {
+                        "reason": str(exc),
+                        "error_kind": exc.kind,
+                        "retryable": exc.retryable,
+                    },
+                    started,
+                )
+                return
             reason = (
                 str(exc)
                 if type(exc) is ValueError

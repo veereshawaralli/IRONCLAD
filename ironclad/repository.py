@@ -4,6 +4,7 @@ import hashlib
 import re
 from pathlib import Path, PurePosixPath
 
+from .redaction import redact
 from .schema import Evidence, Proposal
 
 DENIED = {
@@ -78,7 +79,7 @@ def chunks(root: Path, limit: int) -> list[Evidence]:
                                 path=relative,
                                 start_line=node.lineno,
                                 end_line=end,
-                                text=snippet,
+                                text=redact(snippet),
                             )
                         )
     return result

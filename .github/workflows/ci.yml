@@ -1,5 +1,5 @@
 name: validate
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -9,7 +9,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[dev,production]'
-      - run: python -m ruff check ironclad tests
+      - run: python -m ruff check ironclad tests start.py scripts
       - run: python -m mypy ironclad
       - run: python -m pytest --cov=ironclad.engine --cov=ironclad.fleet --cov=ironclad.repository --cov-fail-under=80
   frontend:
@@ -25,6 +25,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run typecheck
       - run: npm run build
         env:
@@ -58,3 +59,30 @@ jobs:
           IRONCLAD_TEST_REDIS: redis://localhost:6379/0
       - run: docker build -f Dockerfile.sandbox -t ironclad-sandbox:local .
       - run: python scripts/smoke_docker.py
+      - run: python scripts/acceptance_load.py
+
+  hosted-acceptance:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[dev,production]'
+      - run: docker build -f Dockerfile.sandbox -t ironclad-sandbox:local .
+      - name: Real hosted repair and draft PR
+        run: python scripts/hosted_acceptance.py
+        env:
+          IRONCLAD_API_KEY: ${{ secrets.IRONCLAD_API_KEY }}
+          IRONCLAD_API_URL: ${{ vars.IRONCLAD_API_URL || 'https://api.openai.com/v1/chat/completions' }}
+          IRONCLAD_MODEL: ${{ vars.IRONCLAD_MODEL }}
+          IRONCLAD_INPUT_USD_PER_MILLION: ${{ vars.IRONCLAD_INPUT_USD_PER_MILLION }}
+          IRONCLAD_OUTPUT_USD_PER_MILLION: ${{ vars.IRONCLAD_OUTPUT_USD_PER_MILLION }}
+          IRONCLAD_GITHUB_TOKEN: ${{ github.token }}
+          IRONCLAD_GITHUB_REPO: ${{ github.repository }}
+          IRONCLAD_REPO_SUBDIR: examples/broken_repo
+          IRONCLAD_ACCEPTANCE_APPROVE: '1'

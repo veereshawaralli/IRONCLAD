@@ -1,15 +1,22 @@
 import json
+import math
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 from .postgres import PostgresConnection
 from .schema import Message
 
 
+class LeaseLost(ValueError):
+    pass
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.fence: tuple[str, str] | None = None
         self.db: sqlite3.Connection | PostgresConnection
         dsn = os.environ.get("IRONCLAD_DATABASE_URL")
         if dsn:
@@ -20,6 +27,7 @@ class Store:
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, status TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY,expires DOUBLE PRECISION NOT NULL);
         CREATE TABLE IF NOT EXISTS charges(run_id TEXT, amount REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, input TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(run_id TEXT, seq INTEGER, message TEXT NOT NULL,
@@ -29,6 +37,12 @@ class Store:
         CREATE TRIGGER IF NOT EXISTS immutable_events_delete BEFORE DELETE ON events
           BEGIN SELECT RAISE(ABORT, 'append-only'); END;
         """)
+        self.db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(jobs)")}
+        for name, kind in [("owner", "TEXT"), ("lease_until", "REAL")]:
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {kind}")
+        self.db.commit()
 
     def begin(self, run_id: str, data: dict[str, object]) -> dict[str, object]:
         with self.db:
@@ -40,11 +54,15 @@ class Store:
 
     def append(self, event: Message) -> None:
         with self.db:
+            self.assert_fence()
             self.db.execute(
                 "INSERT INTO events VALUES (?,?,?)",
                 (event.run_id, event.seq, event.model_dump_json()),
             )
 
+        self.after_append(event)
+
+    def after_append(self, event: Message) -> None:
         import logging
 
         logging.getLogger("ironclad.events").info(
@@ -81,11 +99,37 @@ class Store:
                     "Redis relay unavailable; durable event log retained"
                 )
 
-    def events(self, run_id: str) -> list[Message]:
+    def record(self, prototype: Message, unique_kind: bool = False) -> Message:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.assert_fence()
+            if unique_kind:
+                for prior in self.events(prototype.run_id):
+                    if prior.kind == prototype.kind:
+                        self.db.commit()
+                        return prior
+            seq = self.db.execute(
+                "SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE run_id=?",
+                (prototype.run_id,),
+            ).fetchone()[0]
+            event = prototype.model_copy(update={"seq": int(seq)})
+            self.db.execute(
+                "INSERT INTO events VALUES(?,?,?)",
+                (event.run_id, event.seq, event.model_dump_json()),
+            )
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        self.after_append(event)
+        return event
+
+    def events(self, run_id: str, after: int = 0) -> list[Message]:
         return [
             Message.model_validate_json(r[0])
             for r in self.db.execute(
-                "SELECT message FROM events WHERE run_id=? ORDER BY seq", (run_id,)
+                "SELECT message FROM events WHERE run_id=? AND seq>? ORDER BY seq",
+                (run_id, after),
             )
         ]
 
@@ -96,8 +140,17 @@ class Store:
         return dict(json.loads(row[0]))
 
     def reserve(self, run_id: str, amount: float, cap: float, calls: int) -> None:
+        if (
+            not math.isfinite(amount)
+            or not math.isfinite(cap)
+            or amount < 0
+            or cap <= 0
+            or calls < 1
+        ):
+            raise ValueError("Invalid budget reservation")
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            self.assert_fence()
             spent, used = self.db.execute(
                 "SELECT COALESCE(SUM(amount),0),COUNT(*) FROM charges WHERE run_id=?",
                 (run_id,),
@@ -110,10 +163,11 @@ class Store:
             self.db.rollback()
             raise
 
-    def list_runs(self) -> list[dict[str, object]]:
+    def list_runs(self, limit: int = 1000, offset: int = 0) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         for rid, raw in self.db.execute(
-            "SELECT id,input FROM runs ORDER BY rowid DESC LIMIT 1000"
+            "SELECT id,input FROM runs ORDER BY rowid DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         ):
             data = json.loads(raw)
             events = self.events(rid)
@@ -142,21 +196,70 @@ class Store:
 
     def queue(self, rid: str) -> None:
         with self.db:
-            self.db.execute("INSERT INTO jobs VALUES (?, 'queued')", (rid,))
+            self.db.execute("INSERT INTO jobs(id,status) VALUES (?, 'queued')", (rid,))
+        url = os.environ.get("IRONCLAD_REDIS_URL")
+        if url:
+            import redis
 
-    def claim(self) -> str | None:
+            try:
+                with redis.Redis.from_url(
+                    url, socket_timeout=2, socket_connect_timeout=2
+                ) as client:
+                    client.xadd("ironclad:jobs", {"run_id": rid})
+            except redis.RedisError:
+                pass  # Durable SQL polling catches a crash/outage before notification.
+
+    def claim(
+        self, owner: str = "local-worker", lease_seconds: float = 45
+    ) -> str | None:
         self.db.execute("BEGIN IMMEDIATE")
-        row = self.db.execute(
-            "SELECT id FROM jobs WHERE status='queued' ORDER BY rowid LIMIT 1"
-        ).fetchone()
-        if row:
-            self.db.execute("UPDATE jobs SET status='running' WHERE id=?", (row[0],))
-        self.db.commit()
-        return str(row[0]) if row else None
+        try:
+            now = time.time()
+            row = self.db.execute(
+                "SELECT id FROM jobs WHERE status='queued' OR (status='running' AND lease_until<?) ORDER BY rowid LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row:
+                self.db.execute(
+                    "UPDATE jobs SET status='running',owner=?,lease_until=? WHERE id=?",
+                    (owner, now + lease_seconds, row[0]),
+                )
+            self.db.commit()
+            self.fence = (str(row[0]), owner) if row else None
+            return str(row[0]) if row else None
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def assert_fence(self) -> None:
+        if self.fence:
+            rid, owner = self.fence
+            row = self.db.execute(
+                "SELECT owner,lease_until,status FROM jobs WHERE id=?", (rid,)
+            ).fetchone()
+            if (
+                not row
+                or row[0] != owner
+                or float(row[1] or 0) < time.time()
+                or row[2] != "running"
+            ):
+                raise LeaseLost("Worker lease lost; stale side effects are fenced")
+
+    def heartbeat(self, rid: str, owner: str, lease_seconds: float = 45) -> bool:
+        with self.db:
+            result = self.db.execute(
+                "UPDATE jobs SET lease_until=? WHERE id=? AND owner=? AND status='running' AND lease_until>=?",
+                (time.time() + lease_seconds, rid, owner, time.time()),
+            )
+            return result.rowcount == 1
 
     def finish(self, rid: str) -> None:
         with self.db:
-            self.db.execute("UPDATE jobs SET status='finished' WHERE id=?", (rid,))
+            self.assert_fence()
+            self.db.execute(
+                "UPDATE jobs SET status='finished',lease_until=NULL WHERE id=?", (rid,)
+            )
+        self.fence = None
 
     def settings(self) -> dict[str, object]:
         row = self.db.execute("SELECT value FROM settings WHERE id=1").fetchone()

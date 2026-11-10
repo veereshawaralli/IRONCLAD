@@ -123,3 +123,35 @@ def test_login_rate_limit(client):
     for _ in range(10):
         assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
     assert client.post("/api/login", json={"token": "wrong"}).status_code == 429
+
+
+def test_paginated_history(client):
+    headers = auth(client)
+    for _ in range(3):
+        client.post("/api/runs", headers=headers, json={"log": "fixture"})
+    first = client.get("/api/runs?limit=2&offset=0").json()
+    second = client.get("/api/runs?limit=2&offset=2").json()
+    assert len(first) == 2 and len(second) == 1
+    assert not ({r["id"] for r in first} & {r["id"] for r in second})
+    assert client.get("/api/runs?limit=10000").status_code == 422
+
+
+def test_logout_revokes_server_session(client):
+    headers = auth(client)
+    old = client.cookies["ironclad_session"]
+    assert client.post("/api/logout", headers=headers).status_code == 200
+    client.cookies.set("ironclad_session", old)
+    assert client.get("/api/runs").status_code == 401
+
+
+def test_chunked_body_limit(client):
+    def chunks():
+        for _ in range(16):
+            yield b"x" * 65536
+
+    assert (
+        client.post(
+            "/api/login", content=chunks(), headers={"Content-Type": "application/json"}
+        ).status_code
+        == 413
+    )

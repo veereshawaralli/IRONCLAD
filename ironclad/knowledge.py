@@ -46,7 +46,7 @@ def bm25(query: str, docs: list[Evidence]) -> list[int]:
 
 def embed(text: str, store: Store, rid: str, budget: float, calls: int) -> list[float]:
     rate = float(os.environ["IRONCLAD_EMBEDDING_USD_PER_MILLION"])
-    if rate <= 0:
+    if not math.isfinite(rate) or rate <= 0:
         raise ValueError("Embedding price must be positive")
     store.reserve(rid, (len(text.encode()) + 512) * rate / 1000000, budget, calls)
     request = urllib.request.Request(
@@ -58,8 +58,10 @@ def embed(text: str, store: Store, rid: str, budget: float, calls: int) -> list[
         ).encode(),
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer " + os.environ["IRONCLAD_EMBEDDING_KEY"],
         },
+    )
+    request.add_unredirected_header(
+        "Authorization", "Bearer " + os.environ["IRONCLAD_EMBEDDING_KEY"]
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         result = json.load(response)

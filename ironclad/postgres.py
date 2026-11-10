@@ -9,8 +9,11 @@ _migrated: set[str] = set()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,input TEXT NOT NULL,ordinal BIGSERIAL);
 CREATE TABLE IF NOT EXISTS events(run_id TEXT,seq INTEGER,message TEXT NOT NULL,PRIMARY KEY(run_id,seq));
-CREATE TABLE IF NOT EXISTS charges(run_id TEXT,amount DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY,expires DOUBLE PRECISION NOT NULL);
+        CREATE TABLE IF NOT EXISTS charges(run_id TEXT,amount DOUBLE PRECISION NOT NULL);
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,ordinal BIGSERIAL);
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS owner TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_until DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY,value TEXT NOT NULL);
 CREATE OR REPLACE FUNCTION ironclad_immutable_events() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'append-only'; END $$;
@@ -26,8 +29,12 @@ class PostgresConnection:
         self.connection = psycopg.connect(dsn, autocommit=True)
         with _migration_lock:
             if dsn not in _migrated:
-                self.connection.execute(SCHEMA)
-                _migrated.add(dsn)
+                self.connection.execute("SELECT pg_advisory_lock(710413)")
+                try:
+                    self.connection.execute(SCHEMA)
+                    _migrated.add(dsn)
+                finally:
+                    self.connection.execute("SELECT pg_advisory_unlock(710413)")
         self.context: Any = None
 
     def execute(self, sql: str, args: tuple[Any, ...] = ()) -> Any:
@@ -35,6 +42,8 @@ class PostgresConnection:
             self.connection.execute("BEGIN")
             # Single installation-level advisory lock for budget and queue claims.
             return self.connection.execute("SELECT pg_advisory_xact_lock(710412)")
+        if sql.startswith("SELECT owner,lease_until,status FROM jobs"):
+            sql += " FOR UPDATE"
         sql = sql.replace("ORDER BY rowid", "ORDER BY ordinal")
         sql = sql.replace(
             "INSERT OR IGNORE INTO runs VALUES (?,?)",

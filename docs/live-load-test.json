@@ -1,0 +1,12 @@
+{
+  "clients": 500,
+  "duration_seconds": 30,
+  "events_per_client": 150,
+  "received_events": 75000,
+  "failures": 0,
+  "p50_delivery_ms": 29.93,
+  "p95_delivery_ms": 50.1,
+  "p99_delivery_ms": 57.34,
+  "wall_seconds": 31.0,
+  "scope": "local persisted event to WebSocket receive; includes persistence/poll/fan-out, excludes browser rendering"
+}

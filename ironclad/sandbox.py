@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
+from .redaction import redact
 from .repository import safe_file
 from .schema import Proposal, Verification
 
@@ -64,7 +65,7 @@ class DockerSandbox:
                     raise ValueError("Sandbox snapshot exceeds file/byte cap")
                 target = destination / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                target.write_text(redact(source.read_text()))
 
     def run(self, source: Path) -> dict[str, object]:
         if not shutil.which("docker"):
@@ -134,20 +135,38 @@ class DockerSandbox:
             scratch.chmod(0o755)
             self.snapshot(repo, scratch)
             baseline = self.run(scratch)
+            baseline_stable = True
+            if baseline["test_code"] == 1:
+                repeated = self.run(scratch)
+                baseline_stable = set(cast(list[str], baseline["failures"])) == set(
+                    cast(list[str], repeated["failures"])
+                )
             for edit in proposal.edits:
                 path = safe_file(scratch, edit.path)
                 path.write_text(path.read_text().replace(edit.old, edit.new, 1))
             patched = self.run(scratch)
+            patched_stable = True
+            if patched["test_code"] == 1:
+                repeated = self.run(scratch)
+                patched_stable = set(cast(list[str], patched["failures"])) == set(
+                    cast(list[str], repeated["failures"])
+                )
         before = cast(list[str], baseline["failures"])
         after = cast(list[str], patched["failures"])
         checks = cast(dict[str, bool], patched["checks"]).copy()
         checks["baseline_reproduced"] = bool(before) and baseline["test_code"] == 1
         checks["tests"] = patched["test_code"] == 0
+        checks["stable_tests"] = baseline_stable and patched_stable
         checks["no_regression"] = not (set(after) - set(before))
         return Verification(
             passed=all(checks.values()),
             baseline_failures=before,
             remaining_failures=after,
             checks=checks,
-            output=str(patched["output"]),
+            output=redact(str(patched["output"]))
+            + (
+                "\nUnstable tests detected; automatic acceptance blocked."
+                if not checks["stable_tests"]
+                else ""
+            ),
         )

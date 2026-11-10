@@ -31,13 +31,13 @@ class GitHub:
                 method=method,
                 data=json.dumps(body).encode() if body is not None else None,
                 headers={
-                    "Authorization": "Bearer " + self.token,
                     "Accept": "application/vnd.github+json",
                     "Content-Type": "application/json",
                     "X-GitHub-Api-Version": "2022-11-28",
                     "User-Agent": "IRONCLAD",
                 },
             )
+            req.add_unredirected_header("Authorization", "Bearer " + self.token)
             try:
                 with urllib.request.urlopen(req, timeout=30) as response:
                     result = json.load(response)
@@ -72,13 +72,22 @@ class GitHub:
         base = metadata["default_branch"]
         head = self.request("GET", "/git/ref/heads/" + base)["object"]["sha"]
         tree = self.request("GET", "/git/commits/" + head)["tree"]["sha"]
+        from pathlib import PurePosixPath
+
+        prefix = PurePosixPath(os.environ.get("IRONCLAD_REPO_SUBDIR", ""))
+        if prefix.is_absolute() or ".." in prefix.parts:
+            raise ValueError("Unsafe repository subdirectory")
         texts: dict[str, str] = {}
         for edit in proposal.edits:
             if edit.path not in texts:
                 from urllib.parse import quote
 
                 remote = self.request(
-                    "GET", "/contents/" + quote(edit.path, safe="/") + "?ref=" + head
+                    "GET",
+                    "/contents/"
+                    + quote((prefix / edit.path).as_posix(), safe="/")
+                    + "?ref="
+                    + head,
                 )
                 raw = base64.b64decode(remote["content"])
                 if hashlib.sha256(raw).hexdigest() != hashes.get(edit.path):
@@ -95,7 +104,12 @@ class GitHub:
             {
                 "base_tree": tree,
                 "tree": [
-                    {"path": p, "mode": "100644", "type": "blob", "content": text}
+                    {
+                        "path": (prefix / p).as_posix(),
+                        "mode": "100644",
+                        "type": "blob",
+                        "content": text,
+                    }
                     for p, text in texts.items()
                 ],
             },

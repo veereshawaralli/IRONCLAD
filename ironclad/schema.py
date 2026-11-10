@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class Agent(StrEnum):
@@ -76,7 +76,7 @@ class Guardrails(StrictModel):
     max_input_chars: int = Field(default=24000, ge=1000, le=100000)
     max_output_tokens: int = Field(default=1200, ge=128, le=4000)
     max_model_calls: int = Field(default=4, ge=1, le=6)
-    dollar_budget: float = Field(default=0.50, gt=0)
+    dollar_budget: float = Field(default=0.50, gt=0, le=100)
 
 
 class Verification(StrictModel):

@@ -1,9 +1,11 @@
 import json
+import math
 import os
 import urllib.request
 from collections.abc import Callable
 from typing import TypeVar
 
+from .resilience import ProviderError, request_with_backoff
 from .schema import StrictModel
 
 T = TypeVar("T", bound=StrictModel)
@@ -25,7 +27,10 @@ class HostedModel:
         self.max_tokens = max_tokens
         self.input_rate = float(os.environ["IRONCLAD_INPUT_USD_PER_MILLION"])
         self.output_rate = float(os.environ["IRONCLAD_OUTPUT_USD_PER_MILLION"])
-        if self.input_rate <= 0 or self.output_rate <= 0:
+        if not all(
+            math.isfinite(rate) and rate > 0
+            for rate in (self.input_rate, self.output_rate)
+        ):
             raise ValueError("Model prices must be positive")
 
     def generate(self, schema: type[T], content: str) -> T:
@@ -41,12 +46,18 @@ class HostedModel:
                 (len(prompt.encode()) + 2048) * self.input_rate
                 + self.max_tokens * self.output_rate
             ) / 1000000
+
             if self.remaining <= 0 or reserve > self.budget:
                 raise ValueError("Model call or configured cost budget exhausted")
-            if self.reserve:
-                self.reserve(reserve)
-            self.remaining -= 1
-            self.budget -= reserve
+
+            def reserve_call(cost: float = reserve) -> None:
+                if self.remaining <= 0 or cost > self.budget:
+                    raise ValueError("Model call or configured cost budget exhausted")
+                if self.reserve:
+                    self.reserve(cost)
+                self.remaining -= 1
+                self.budget -= cost
+
             body = json.dumps(
                 {
                     "model": os.environ["IRONCLAD_MODEL"],
@@ -62,11 +73,24 @@ class HostedModel:
                 data=body,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": "Bearer " + os.environ["IRONCLAD_API_KEY"],
                 },
             )
-            with urllib.request.urlopen(request, timeout=45) as response:
-                result = json.load(response)
+            request.add_unredirected_header(
+                "Authorization", "Bearer " + os.environ["IRONCLAD_API_KEY"]
+            )
+
+            def perform(req: urllib.request.Request = request) -> object:
+                with urllib.request.urlopen(req, timeout=45) as response:
+                    return json.load(response)
+
+            result = request_with_backoff(perform, reserve_call)
+            if not isinstance(result, dict):
+                raise ProviderError("invalid_envelope")
+            choices = result.get("choices") or []
+            if choices and choices[0].get("finish_reason") == "length":
+                raise ProviderError("output_token_limit")
+            if choices and choices[0].get("message", {}).get("refusal"):
+                raise ProviderError("model_refusal")
             try:
                 return schema.model_validate_json(
                     result["choices"][0]["message"]["content"]
