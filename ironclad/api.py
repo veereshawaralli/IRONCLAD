@@ -3,7 +3,6 @@ import hashlib
 import hmac
 import os
 import secrets
-import shutil
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -111,12 +110,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", dependencies=[Depends(authenticate)])
     def health() -> dict[str, object]:
+        s = store()
+        try:
+            state = s.fleet_health()
+        finally:
+            s.db.close()
         return {
             "service": "operational",
-            "docker": bool(shutil.which("docker")),
+            **state,
             "repository": repo.name,
             "model_configured": bool(os.environ.get("IRONCLAD_API_KEY")),
-            "version": "0.3.0",
+            "version": "1.0.0",
         }
 
     @app.get("/api/runs", dependencies=[Depends(authenticate)])
@@ -433,7 +437,12 @@ def create_app() -> FastAPI:
             request.headers.get("X-Hub-Signature-256", ""), expected
         ):
             raise HTTPException(401, "Invalid webhook signature")
-        payload = json.loads(raw)
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise TypeError
+        except (ValueError, TypeError):
+            raise HTTPException(422, "Invalid webhook JSON") from None
         if payload.get("repository", {}).get("full_name") != os.environ.get(
             "IRONCLAD_GITHUB_REPO"
         ):
@@ -450,14 +459,6 @@ def create_app() -> FastAPI:
             raise HTTPException(422, "Delivery identifier required")
         s = store()
         try:
-            s.db.execute(
-                "CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,run_id TEXT)"
-            )
-            previous = s.db.execute(
-                "SELECT run_id FROM deliveries WHERE id=?", (delivery,)
-            ).fetchone()
-            if previous:
-                return {"id": previous[0], "duplicate": True}
             check = payload["check_run"]
             output = check.get("output") or {}
             log = (
@@ -465,9 +466,8 @@ def create_app() -> FastAPI:
                 + "\n"
                 + str(output.get("summary", ""))
             )[:24000]
-            rid = uuid4().hex
-            s.begin(
-                rid,
+            rid, duplicate = s.ingest_delivery(
+                delivery,
                 {
                     "repo": str(repo),
                     "log": redact(log),
@@ -476,10 +476,7 @@ def create_app() -> FastAPI:
                     "head_sha": check.get("head_sha"),
                 },
             )
-            with s.db:
-                s.db.execute("INSERT INTO deliveries VALUES(?,?)", (delivery, rid))
-                s.db.execute("INSERT INTO jobs(id,status) VALUES(?,'queued')", (rid,))
-            return {"id": rid}
+            return {"id": rid, "duplicate": duplicate}
         finally:
             s.db.close()
 

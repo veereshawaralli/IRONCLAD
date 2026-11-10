@@ -27,6 +27,7 @@ class Store:
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, status TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY,seen DOUBLE PRECISION NOT NULL,sandbox INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY,expires DOUBLE PRECISION NOT NULL);
         CREATE TABLE IF NOT EXISTS charges(run_id TEXT, amount REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, input TEXT NOT NULL);
@@ -197,6 +198,9 @@ class Store:
     def queue(self, rid: str) -> None:
         with self.db:
             self.db.execute("INSERT INTO jobs(id,status) VALUES (?, 'queued')", (rid,))
+        self.notify_queue(rid)
+
+    def notify_queue(self, rid: str) -> None:
         url = os.environ.get("IRONCLAD_REDIS_URL")
         if url:
             import redis
@@ -209,6 +213,35 @@ class Store:
             except redis.RedisError:
                 pass  # Durable SQL polling catches a crash/outage before notification.
 
+    def ingest_delivery(
+        self, delivery: str, data: dict[str, object]
+    ) -> tuple[str, bool]:
+        from uuid import uuid4
+
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,run_id TEXT)"
+        )
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            previous = self.db.execute(
+                "SELECT run_id FROM deliveries WHERE id=?", (delivery,)
+            ).fetchone()
+            if previous:
+                self.db.commit()
+                return str(previous[0]), True
+            rid = uuid4().hex
+            self.db.execute(
+                "INSERT INTO runs(id,input) VALUES (?,?)", (rid, json.dumps(data))
+            )
+            self.db.execute("INSERT INTO deliveries VALUES(?,?)", (delivery, rid))
+            self.db.execute("INSERT INTO jobs(id,status) VALUES(?,'queued')", (rid,))
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        self.notify_queue(rid)
+        return rid, False
+
     def claim(
         self, owner: str = "local-worker", lease_seconds: float = 45
     ) -> str | None:
@@ -216,7 +249,7 @@ class Store:
         try:
             now = time.time()
             row = self.db.execute(
-                "SELECT id FROM jobs WHERE status='queued' OR (status='running' AND lease_until<?) ORDER BY rowid LIMIT 1",
+                "SELECT id FROM jobs WHERE status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<?)) ORDER BY rowid LIMIT 1",
                 (now,),
             ).fetchone()
             if row:
@@ -271,3 +304,20 @@ class Store:
                 "INSERT INTO settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
                 (json.dumps(data),),
             )
+
+    def worker_heartbeat(self, owner: str, sandbox: bool) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO workers VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET seen=excluded.seen,sandbox=excluded.sandbox",
+                (owner, time.time(), int(sandbox)),
+            )
+
+    def fleet_health(self) -> dict[str, object]:
+        row = self.db.execute(
+            "SELECT COUNT(*),COALESCE(MAX(sandbox),0) FROM workers WHERE seen>?",
+            (time.time() - 30,),
+        ).fetchone()
+        queued = self.db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status='queued'"
+        ).fetchone()[0]
+        return {"workers": int(row[0]), "docker": bool(row[1]), "queued": int(queued)}

@@ -113,6 +113,43 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     path = Path(os.environ.get("IRONCLAD_DB", ".ironclad/events.db"))
     owner = uuid4().hex
+    import shutil
+    import subprocess
+
+    sandbox_ready = False
+    if shutil.which("docker"):
+        try:
+            sandbox_ready = (
+                subprocess.run(
+                    ["docker", "image", "inspect", "ironclad-sandbox:local"],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def announce() -> None:
+        connection = Store(path)
+        try:
+            connection.worker_heartbeat(owner, sandbox_ready)
+        finally:
+            connection.db.close()
+
+    def monitor() -> None:
+        while True:
+            try:
+                announce()
+            except Exception:  # noqa: BLE001 -- monitoring retries after temporary infrastructure failures
+                logging.getLogger("ironclad.worker").warning(
+                    "Worker health heartbeat temporarily unavailable"
+                )
+            time.sleep(10)
+
+    announce()
+    threading.Thread(target=monitor, daemon=True).start()
     dispatcher = Dispatcher(owner)
     while True:
         ids = dispatcher.wait()

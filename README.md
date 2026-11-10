@@ -15,6 +15,12 @@ IRONCLAD is a single-repository AI repair workbench with six agent roles, an eve
 
 The Next.js dashboard includes Overview, Incidents, Incident workspace, Replay, PR review, Knowledge and Settings. All synthetic demo events carry a simulation marker. Simulation runs cannot be approved or published.
 
+## One-command local launch
+
+After cloning, Windows users can run **`py -3.12 start.py`** from the repository directory. Linux/macOS users can run **`python3 start.py`**. The launcher installs dependencies, builds the dashboard, starts API and worker, opens **http://localhost:8000**, and prints a random local access token. Keep that terminal open; Ctrl+C stops both processes. It requires Python 3.12+ and Node.js 22+ already installed. A PowerShell launcher is also included as `start.ps1`.
+
+`localhost` refers to the computer running the launcher. A workspace-local address from ChatGPT does not start a server on your Windows PC.
+
 ## Quick start: dashboard
 
 Requirements: Python 3.12+, Node.js 22+, Git. Actual code verification also requires Docker.
@@ -57,7 +63,7 @@ python -m ironclad.cli export RUN_ID --output proposed.patch
 
 ## Real repair execution
 
-Build the sandbox image, configure one local target repository, then start one worker in a second terminal:
+Build the sandbox image, configure one local target repository, then start a worker in a second terminal:
 
 ```bash
 docker build -f Dockerfile.sandbox -t ironclad-sandbox:local .
@@ -112,13 +118,13 @@ Every agent transition is recorded in an immutable event log. Reconnecting clien
 | Area | Implementation and trade-off |
 | --- | --- |
 | Graph | Explicit bounded transitions; no uncontrolled autonomous loop. Repair iterations are bounded and repeated diffs are detected. |
-| Durability | SQLite WAL is the zero-service default; `IRONCLAD_DATABASE_URL` enables PostgreSQL for event history, queue, settings and budget reservations. `IRONCLAD_REDIS_URL` enables durable typed Streams mirroring with catch-up. One worker per installation is supported. |
+| Durability | SQLite WAL is the zero-service default; `IRONCLAD_DATABASE_URL` enables PostgreSQL for event history, queue, settings and budget reservations. `IRONCLAD_REDIS_URL` enables durable typed Streams mirroring with catch-up. Workers use durable leases and heartbeat/fencing checks; expired owners cannot append events or spend another request budget. |
 | Retrieval | AST chunks ranked with BM25 and exact-symbol boosts. Optional pgvector embeddings combine with BM25 through reciprocal-rank fusion; stale indexed chunks are excluded. |
 | Model spend | Calls reserve conservative configured estimates in durable storage before network requests. Actual billing depends on provider prices/accounting; configure provider-side caps for a financial ceiling. |
-| Crash recovery | Recorded steps replay exactly. Interrupted executing jobs escalate instead of repeating unknown side effects. Resume does not reconstruct historical filesystem snapshots. |
+| Crash recovery | Recorded steps replay exactly. Completed terminal runs are idempotent. Interrupted executing jobs are reclaimed after lease expiry and escalate instead of repeating unknown side effects. Resume does not reconstruct historical filesystem snapshots. |
 | Isolation | Fresh non-root, network-disabled, read-only containers with capability/PID/CPU/memory/time limits. No fallback to host execution. Docker itself remains a required trusted boundary. |
 | Review | Separate review confirmation and publication gates; only draft PRs. Existing PRs are reused. |
-| UI | Next.js 15 / React 19 / strict TypeScript and custom CSS. Static export is served by FastAPI. This replaces the proposed Tailwind/shadcn state-library stack to keep the initial installation smaller. TanStack Virtual renders incident rows efficiently; the current API caps the feed at 1,000 records. |
+| UI | Next.js 15 / React 19 / strict TypeScript and custom CSS. Static export is served by FastAPI. This replaces the proposed Tailwind/shadcn state-library stack to keep the initial installation smaller. TanStack Virtual renders incident rows efficiently; the API paginates history and the dashboard can load older incidents. |
 | Observability | Structured event logs, authenticated Prometheus-format counters and optional per-step OpenTelemetry OTLP export. |
 
 ## Repository map
@@ -146,9 +152,9 @@ python -m pytest --cov=ironclad --cov-report=term-missing
 cd web && npm run typecheck && npm run build
 ```
 
-See [VALIDATION.md](VALIDATION.md) for measured results and remaining verification limits. Docker and live provider/GitHub execution were not available for an end-to-end real-repository repair during development. Mocked integration tests establish program behaviour, not production security or a guarantee that generated fixes are correct.
+See [VALIDATION.md](VALIDATION.md) for measured results and remaining verification limits. The real Docker fixture and PostgreSQL/Redis/pgvector acceptance jobs passed on GitHub runners. Paid-provider-to-real-PR acceptance still needs configured external credentials. Mocked integration tests establish program behaviour, not production security or a guarantee that generated fixes are correct.
 
-The original broad acceptance targets—live Docker/service validation, full WCAG audit, sustained 500-dashboard workload and under-200ms live latency—must not be inferred from the current validation results. Service-backed and Docker smoke jobs are included in GitHub Actions.
+The sustained transport test delivered 75,000 ordered events to 500 clients over 30 seconds with no failures and 59.79ms p95 delivery on a GitHub runner. This excludes browser rendering and does not establish unlimited scale. Automated UI/accessibility checks are included; full manual WCAG certification is not claimed.
 
 
 ## Optional production services and semantic index
@@ -168,3 +174,14 @@ python scripts/index_repo.py --repo /absolute/repo --budget 1.00
 Embedding inputs are repository source. Index builds reserve an explicit bounded budget before every request. Runtime embedding retrieval shares incident budgets; standalone knowledge queries have a durable installation-wide reservation cap. Without embeddings, BM25 remains available. The index is replaced atomically; retrieval also rejects stale source digests.
 
 Optional `IRONCLAD_OTLP_ENDPOINT` exports agent spans using the run ID as trace ID. `IRONCLAD_REDIS_URL` mirrors committed messages into per-run Streams; the PostgreSQL/SQLite log remains authoritative when Redis is unavailable. This is one installation, not a distributed multi-tenant service.
+
+
+## Live paid-provider acceptance
+
+The full acceptance script is `scripts/hosted_acceptance.py`. GitHub Actions exposes it only through a manually dispatched workflow so a routine push cannot silently spend API credit or create repair PRs.
+
+Configure repository secret **IRONCLAD_API_KEY** and repository variables **IRONCLAD_MODEL**, **IRONCLAD_INPUT_USD_PER_MILLION**, **IRONCLAD_OUTPUT_USD_PER_MILLION** (and optionally **IRONCLAD_API_URL**). Use the provider's actual prices. Run the `validate` workflow from Actions with `workflow_dispatch`. Its hosted acceptance job caps the run at $1 of configured estimated reservations and six calls, verifies the fixture in Docker, and opens a draft PR using the job's repository-scoped token. GitHub must permit Actions to create pull requests. No auto-merge or co-author trailer is added.
+
+For a local subdirectory target, configure `IRONCLAD_REPO_SUBDIR` so the publisher maps local evidence paths to the correct GitHub paths. Provider keys are never needed in chat or committed to the repository.
+
+See [docs/acceptance-matrix.md](docs/acceptance-matrix.md) for measured acceptance status and external configuration requirements.

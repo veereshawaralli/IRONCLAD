@@ -39,6 +39,7 @@
     "dollar_budget": {
       "default": 0.5,
       "exclusiveMinimum": 0,
+      "maximum": 100,
       "title": "Dollar Budget",
       "type": "number"
     }

@@ -45,7 +45,13 @@ class EventHub:
                 if not topic.subscribers:
                     self.topics.pop(rid, None)
                     continue
-                batch = await asyncio.to_thread(self.read, rid, topic.cursor)
+                try:
+                    batch = await asyncio.to_thread(self.read, rid, topic.cursor)
+                except Exception:  # noqa: BLE001 -- retain subscriptions across database outages
+                    import logging
+                    logging.getLogger("ironclad.streaming").warning("Event store temporarily unavailable; replay will resume")
+                    await asyncio.sleep(.2)
+                    continue
                 for event in batch:
                     topic.cursor = event.seq
                     for queue in list(topic.subscribers):

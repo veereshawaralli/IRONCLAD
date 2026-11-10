@@ -79,3 +79,29 @@ def test_atomic_event_sequence_and_unique_approval(tmp_path):
     with ThreadPoolExecutor(4) as pool:
         assert list(pool.map(append, range(4))) == [1] * 4
     assert len(Store(path).events("run")) == 1
+
+
+def test_health_reports_online_workers(tmp_path):
+    store = Store(tmp_path / "health.db")
+    assert store.fleet_health() == {"workers": 0, "docker": False, "queued": 0}
+    store.worker_heartbeat("worker", True)
+    assert store.fleet_health()["workers"] == 1
+    assert store.fleet_health()["docker"]
+
+
+def test_concurrent_webhooks_create_one_run(tmp_path):
+    path = tmp_path / "deliveries.db"
+    Store(path).db.close()
+
+    def ingest(index):
+        store = Store(path)
+        try:
+            return store.ingest_delivery("delivery", {"log": "fixture"})
+        finally:
+            store.db.close()
+
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(ingest, range(4)))
+    assert len({rid for rid, duplicate in results}) == 1
+    assert sum(not duplicate for rid, duplicate in results) == 1
+    assert len(Store(path).list_runs()) == 1

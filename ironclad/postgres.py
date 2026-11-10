@@ -9,7 +9,8 @@ _migrated: set[str] = set()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,input TEXT NOT NULL,ordinal BIGSERIAL);
 CREATE TABLE IF NOT EXISTS events(run_id TEXT,seq INTEGER,message TEXT NOT NULL,PRIMARY KEY(run_id,seq));
-CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY,expires DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY,seen DOUBLE PRECISION NOT NULL,sandbox INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY,expires DOUBLE PRECISION NOT NULL);
         CREATE TABLE IF NOT EXISTS charges(run_id TEXT,amount DOUBLE PRECISION NOT NULL);
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,ordinal BIGSERIAL);
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS owner TEXT;
@@ -26,7 +27,7 @@ class PostgresConnection:
     def __init__(self, dsn: str):
         import psycopg
 
-        self.connection = psycopg.connect(dsn, autocommit=True)
+        self.connection = psycopg.connect(dsn, autocommit=True, connect_timeout=5)
         with _migration_lock:
             if dsn not in _migrated:
                 self.connection.execute("SELECT pg_advisory_lock(710413)")
