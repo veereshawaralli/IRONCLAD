@@ -1,0 +1,62 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "max_files": {
+      "default": 5,
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Max Files",
+      "type": "integer"
+    },
+    "max_steps": {
+      "default": 20,
+      "maximum": 30,
+      "minimum": 1,
+      "title": "Max Steps",
+      "type": "integer"
+    },
+    "max_input_chars": {
+      "default": 24000,
+      "maximum": 100000,
+      "minimum": 1000,
+      "title": "Max Input Chars",
+      "type": "integer"
+    },
+    "max_output_tokens": {
+      "default": 1200,
+      "maximum": 4000,
+      "minimum": 128,
+      "title": "Max Output Tokens",
+      "type": "integer"
+    },
+    "max_model_calls": {
+      "default": 4,
+      "maximum": 6,
+      "minimum": 1,
+      "title": "Max Model Calls",
+      "type": "integer"
+    },
+    "dollar_budget": {
+      "default": 0.5,
+      "exclusiveMinimum": 0,
+      "title": "Dollar Budget",
+      "type": "number"
+    },
+    "max_attempts": {
+      "default": 3,
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "timeout_seconds": {
+      "default": 60,
+      "maximum": 120,
+      "minimum": 5,
+      "title": "Timeout Seconds",
+      "type": "integer"
+    }
+  },
+  "title": "FleetPolicy",
+  "type": "object"
+}

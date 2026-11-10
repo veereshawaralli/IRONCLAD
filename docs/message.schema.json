@@ -5,7 +5,9 @@
         "watcher",
         "diagnostician",
         "surgeon",
-        "supervisor"
+        "supervisor",
+        "verifier",
+        "reporter"
       ],
       "title": "Agent",
       "type": "string"
@@ -36,7 +38,12 @@
         "incident",
         "diagnosis",
         "proposal",
-        "escalated"
+        "escalated",
+        "verification",
+        "report",
+        "approved",
+        "pull_request",
+        "reservation"
       ],
       "title": "Kind",
       "type": "string"

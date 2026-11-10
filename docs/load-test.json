@@ -1,0 +1,9 @@
+{
+  "requested_clients": 500,
+  "successful_clients": 500,
+  "failed_clients": 0,
+  "replay_events_per_client": 8,
+  "connection_plus_replay_p95_ms": 569.46,
+  "wall_seconds": 1.19,
+  "scope": "localhost connection and persisted replay fan-out; not a live event latency guarantee"
+}

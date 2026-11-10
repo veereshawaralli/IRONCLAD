@@ -10,7 +10,7 @@
     },
     "max_steps": {
       "default": 3,
-      "maximum": 3,
+      "maximum": 20,
       "minimum": 1,
       "title": "Max Steps",
       "type": "integer"

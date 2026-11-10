@@ -105,3 +105,21 @@ def test_webhook_signature_and_deduplication(client, monkeypatch):
     assert first.status_code == 200
     assert second.json()["duplicate"]
     assert first.json()["id"] == second.json()["id"]
+
+
+def test_metrics_and_simulation_publication_blocked(client):
+    headers = auth(client)
+    rid = client.post("/api/demo", headers=headers).json()["id"]
+    assert "ironclad_incidents 1" in client.get("/api/metrics").text
+    assert (
+        client.post(
+            "/api/runs/" + rid + "/approve", headers=headers, json={"confirmed": True}
+        ).status_code
+        == 409
+    )
+
+
+def test_login_rate_limit(client):
+    for _ in range(10):
+        assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    assert client.post("/api/login", json={"token": "wrong"}).status_code == 429

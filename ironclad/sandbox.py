@@ -19,7 +19,7 @@ if pathlib.Path("/tmp/report.xml").exists():
         if case.find("failure") is not None or case.find("error") is not None:
             failures.append(case.attrib.get("classname", "") + "::" + case.attrib.get("name", ""))
 checks = {}
-for name, cmd in {"lint": ["ruff", "check", "."], "types": ["mypy", "--ignore-missing-imports", "."], "security": ["bandit", "-q", "-r", "."]}.items():
+for name, cmd in {"lint": ["ruff", "check", "--no-cache", "."], "types": ["mypy", "--ignore-missing-imports", "--cache-dir", "/tmp/mypy", "."], "security": ["bandit", "-q", "-r", ".", "-s", "B101"]}.items():
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     checks[name] = result.returncode == 0
 print(json.dumps({"test_code": r.returncode, "failures": failures, "checks": checks, "output": (r.stdout+r.stderr)[-8000:]}))
@@ -124,7 +124,9 @@ class DockerSandbox:
         from .repository import render_patch
 
         render_patch(repo, proposal, 5)
-        with tempfile.TemporaryDirectory(prefix="ironclad-") as temp:
+        parent = Path("/tmp/ironclad-sandboxes")
+        parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="ironclad-", dir=parent) as temp:
             scratch = Path(temp)
             # temp root must be traversable by container's non-root UID.
             scratch.chmod(0o755)

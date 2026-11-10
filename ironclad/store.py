@@ -1,13 +1,20 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
+from .postgres import PostgresConnection
 from .schema import Message
 
 
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.db: sqlite3.Connection | PostgresConnection
+        dsn = os.environ.get("IRONCLAD_DATABASE_URL")
+        if dsn:
+            self.db = PostgresConnection(dsn)
+            return
         self.db = sqlite3.connect(path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript("""
@@ -37,6 +44,42 @@ class Store:
                 "INSERT INTO events VALUES (?,?,?)",
                 (event.run_id, event.seq, event.model_dump_json()),
             )
+
+        import logging
+
+        logging.getLogger("ironclad.events").info(
+            json.dumps(
+                {
+                    "run_id": event.run_id,
+                    "seq": event.seq,
+                    "agent": event.agent,
+                    "kind": event.kind,
+                    "duration_ms": event.duration_ms,
+                }
+            )
+        )
+
+        from .telemetry import record
+
+        record(event)
+        redis_url = os.environ.get("IRONCLAD_REDIS_URL")
+        if redis_url:
+            import redis
+
+            from .bus import RedisBus
+
+            try:
+                client = redis.Redis.from_url(
+                    redis_url, socket_timeout=2, socket_connect_timeout=2
+                )
+                bus = RedisBus(client)
+                for prior in self.events(event.run_id):
+                    bus.publish(prior)
+                client.close()
+            except redis.RedisError:
+                logging.getLogger("ironclad.events").warning(
+                    "Redis relay unavailable; durable event log retained"
+                )
 
     def events(self, run_id: str) -> list[Message]:
         return [

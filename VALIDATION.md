@@ -1,15 +1,15 @@
-# Delivery validation · 2026-11-10
+# Validation · 2026-11-10
 
-Python 3.12.14. Installed editable package with development dependencies.
+- Python 3.12; Next.js 15.5.29 / React 19; TypeScript strict.
+- 37 Python tests passed, 2 service-backed tests skipped locally: guards, model JSON retry, immutable history, durable cost, bounded repair, API auth, settings, WebSocket replay, webhook signature/deduplication, review and mocked GitHub publication.
+- Ruff checks and strict mypy pass across 17 Python application modules.
+- Production Next.js static export compiled successfully; TypeScript validation passed.
+- Overall Python statement coverage: 76%. Engine 96%, Fleet 84%, repository retrieval/guards 90%, API 88%. Docker execution wrapper coverage is 28%; actual container execution is not tested in this environment.
+- The fixture integration test applies a generated diff to a temporary repository and runs its actual tests successfully.
+- 500 local WebSocket replay clients succeeded, eight ordered events each, zero failures. Connection-plus-replay p95: 569.46ms; wall time: 1.19 seconds. See docs/load-test.json. This does not establish sustained load or under-200ms live-event latency.
+- Hosted model and GitHub publisher integration use mocks. No paid provider calls or real repair PRs were made during development.
+- Browser preview access was blocked by the execution gateway. No visual QA or WCAG certification is claimed.
+- Docker is unavailable; Compose/sandbox runtime validation must be completed on a Docker-capable host.
+- External AnyIO/Starlette test adapters emit deprecation warnings; tests pass.
 
-- `python -m pytest -q --cov=ironclad --cov-report=term-missing`: **20 passed**.
-- Overall statement coverage: **81%**. Engine: **96%**. Repository retrieval/guardrails: **90%**.
-- Integration fixture: generated unified patch applied with `git apply` to a temporary repository; both fixture tests passed.
-- `python -m ruff check ironclad tests`: passed.
-- `python -m mypy ironclad`: strict typecheck passed across 8 source files.
-- CLI demo and help executed successfully.
-- Hosted model tests use mocked HTTP responses, including malformed JSON then retry. No paid API or GitHub call was made.
-- Redis relay tested with an in-memory fake, not a live Redis server.
-- Test environment emitted an external AnyIO plugin pytest-deprecation warning; no project test failures.
-
-No claims of browser QA, Docker sandbox verification, PR integration, WebSocket latency, or load testing apply to this first phase.
+Unimplemented original-spec items are listed in ROADMAP.md. The repository intentionally does not present the local v1 as fully production-certified.

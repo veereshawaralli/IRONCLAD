@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .fleet import Fleet
-from .repository import retrieve
+from .knowledge import retrieve
 from .schema import Agent, FleetPolicy
 from .store import Store
 
@@ -62,10 +62,32 @@ def create_app() -> FastAPI:
         ):
             raise HTTPException(403, "Missing request intent")
 
+    failures: dict[str, list[float]] = {}
+
+    @app.middleware("http")
+    async def request_limits(request: Request, call_next: object) -> Response:
+        from typing import Any, cast
+
+        from starlette.responses import JSONResponse
+
+        length = request.headers.get("content-length", "0")
+        if not length.isdigit() or int(length) > 1000000:
+            return JSONResponse({"detail": "Request too large"}, status_code=413)
+        return cast(Response, await cast(Any, call_next)(request))
+
     @app.post("/api/login")
-    def login(body: Login, response: Response) -> dict[str, bool]:
+    def login(body: Login, response: Response, request: Request) -> dict[str, bool]:
+        address = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        attempts = [t for t in failures.get(address, []) if now - t < 60]
+        if len(attempts) >= 10:
+            raise HTTPException(429, "Too many sign-in attempts; retry in one minute")
+        if len(failures) > 10000:
+            failures.clear()
         if not secrets.compare_digest(body.token, secret):
+            failures[address] = attempts + [now]
             raise HTTPException(401, "Invalid access token")
+        failures.pop(address, None)
         response.set_cookie(
             "ironclad_session",
             cookie,
@@ -167,15 +189,19 @@ def create_app() -> FastAPI:
         if len(q) > 1000:
             raise HTTPException(422, "Query too long")
         try:
-            citations = retrieve(repo, q, 24000)
+            s = store()
+            try:
+                citations = retrieve(repo, q, 24000, s)
+            finally:
+                s.db.close()
             return {
-                "strategy": "AST + lexical baseline",
+                "strategy": "AST + BM25 / optional pgvector RRF",
                 "repository": repo.name,
                 "results": [e.model_dump() for e in citations],
             }
         except ValueError as exc:
             return {
-                "strategy": "AST + lexical baseline",
+                "strategy": "AST + BM25 / optional pgvector RRF",
                 "results": [],
                 "message": str(exc),
             }
@@ -402,6 +428,37 @@ def create_app() -> FastAPI:
                 s.db.execute("INSERT INTO deliveries VALUES(?,?)", (delivery, rid))
                 s.db.execute("INSERT INTO jobs VALUES(?,'queued')", (rid,))
             return {"id": rid}
+        finally:
+            s.db.close()
+
+    @app.get("/api/metrics", dependencies=[Depends(authenticate)])
+    def metrics() -> Response:
+        s = store()
+        try:
+            runs = s.list_runs()
+            events = [e for r in runs for e in s.events(str(r["id"]))]
+            durations = sorted(e.duration_ms for e in events)
+            p95 = (
+                durations[min(len(durations) - 1, int(len(durations) * 0.95))]
+                if durations
+                else 0
+            )
+            reserved = sum(float(str(r["reserved_usd"])) for r in runs)
+            text = (
+                "\n".join(
+                    [
+                        "# TYPE ironclad_incidents gauge",
+                        f"ironclad_incidents {len(runs)}",
+                        f"ironclad_steps {len(events)}",
+                        f"ironclad_agent_duration_p95_ms {p95}",
+                        f"ironclad_reserved_usd {reserved}",
+                        f"ironclad_escalations {sum(r['status'] == 'escalated' for r in runs)}",
+                        f"ironclad_draft_prs {sum(e.kind == 'pull_request' for e in events)}",
+                    ]
+                )
+                + "\n"
+            )
+            return Response(text, media_type="text/plain; version=0.0.4")
         finally:
             s.db.close()
 

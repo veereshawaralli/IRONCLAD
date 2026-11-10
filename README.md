@@ -1,97 +1,170 @@
-# IRONCLAD · Autonomous Code Guardian
+# IRONCLAD — Autonomous Code Guardian
 
-**Phase 1: runnable CLI, typed agent graph, append-only events, cited diagnosis, guarded patch proposals.**
+**Detect. Diagnose. Repair. Verify. Review.**
 
-This implements the first delivery phase of the supplied specification. It is a development foundation, not a production autonomous repair service. The default demo is deterministic and clearly identified. Hosted mode uses your configured model API. No repository code is executed by the agents, no files in the target repository are modified, and no PR is opened in this phase.
+IRONCLAD is a single-repository AI repair workbench with six agent roles, an event-sourced workflow, a live mission-control dashboard, isolated verification, and human-reviewed draft pull requests. This repository contains the phased implementation; milestone branches preserve each delivered phase.
 
-## Repository structure
+## What you can run
 
-```text
-ironclad/
-  schema.py       typed messages, agent outputs and policies
-  store.py        durable SQLite event log and checkpoint storage
-  repository.py   AST chunks, retrieval and guarded diff creation
-  engine.py       explicit Watcher → Diagnostician → Surgeon graph
-  model.py        hosted model adapter with structured-output retry
-  bus.py          optional idempotent Redis Streams relay
-  cli.py          run, resume, replay and export
-examples/
-  broken_repo/    deliberately failing Python project
-  failure.log
-design/tokens.css
-docs/message.schema.json
-tests/test_engine.py
-pyproject.toml
-```
+- **Supervisor** enforces scope, persistent model reservations, step and attempt caps, repeated-patch detection, and escalation.
+- **Watcher** accepts logs and signed failed-CI webhooks.
+- **Diagnostician** cites AST-extracted Python functions/classes and validates model output.
+- **Surgeon** proposes minimal edits restricted to cited files; denied paths, symlinks, ambiguous replacements and invalid Python are rejected.
+- **Verifier** compares baseline and patched pytest failures in fresh restricted Docker containers, and requires lint, type and security checks.
+- **Reporter** prepares the review summary and opens a draft GitHub PR after explicit diff review.
 
-## Quick start (Python 3.12+)
+The Next.js dashboard includes Overview, Incidents, Incident workspace, Replay, PR review, Knowledge and Settings. All synthetic demo events carry a simulation marker. Simulation runs cannot be approved or published.
+
+## Quick start: dashboard
+
+Requirements: Python 3.12+, Node.js 22+, Git. Actual code verification also requires Docker.
 
 ```bash
+git clone https://github.com/veereshawaralli/IRONCLAD.git
+cd IRONCLAD
 python -m venv .venv
-# Windows: .venv\Scripts\activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 # Linux/macOS: source .venv/bin/activate
 python -m pip install -e ".[dev]"
-python -m ironclad.cli run --repo examples/broken_repo --log examples/failure.log
+cd web
+npm ci
+npm run build
+cd ..
 ```
 
-Copy the run ID printed on the first line:
+Set a random installation access token (at least 24 characters):
 
 ```bash
+# Linux/macOS
+export IRONCLAD_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python -m uvicorn ironclad.api:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Windows PowerShell:
+
+```powershell
+$env:IRONCLAD_ADMIN_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+python -m uvicorn ironclad.api:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Open **http://localhost:8000**, sign in using your installation token, and choose **Explore demo**. The demo is a recorded synthetic scenario; no code or model runs. The standalone CLI remains available:
+
+```bash
+python -m ironclad.cli run --repo examples/broken_repo --log examples/failure.log
 python -m ironclad.cli replay RUN_ID
-python -m ironclad.cli resume RUN_ID
 python -m ironclad.cli export RUN_ID --output proposed.patch
 ```
 
-The fixture declares that `average([])` must return `0.0`. The demo emits the three typed agent events and a unified diff adding that guard. The repository is unchanged. Patch metadata explicitly says `NOT_RUN` and `PROPOSAL_ONLY`. To inspect the fix yourself, use a disposable copy of the fixture, apply the patch with `git apply`, and run pytest there.
+## Real repair execution
 
-For a different policy, create a JSON file using the fields in `Guardrails` and pass `--policy policy.json`. Unknown keys and out-of-range settings are rejected.
-
-## Hosted model mode
-
-Set the environment variables listed in `.env.example` in your terminal. The file is documentation, not automatically loaded. Supply your provider's actual input/output prices and a compatible chat-completions model. Run:
+Build the sandbox image, configure one local target repository, then start one worker in a second terminal:
 
 ```bash
-python -m ironclad.cli run --repo /path/to/python/repo --log failure.log --mode hosted
+docker build -f Dockerfile.sandbox -t ironclad-sandbox:local .
+# Set IRONCLAD_REPO to an absolute path to your Python repository.
+# API and worker must use the same IRONCLAD_DB and IRONCLAD_REPO.
+python -m ironclad.worker
 ```
 
-This sends selected repository function/class text and failure logs to the configured model provider. Use repositories/logs you can share with that provider. No GitHub or model credentials belong inside the target repository. Denied paths are excluded, but arbitrary secrets inside permitted Python source are not automatically detected: redact those before hosted use.
+Set the hosted model variables in `.env.example` in the API/worker environment. Supply real provider prices and one chat-completions-compatible coding model. **New incident** uses hosted mode when configured; otherwise it supports the bundled empty-input fixture. The worker refuses host execution when Docker is unavailable. Non-Python assets, arbitrary dependency installation, and external service integration tests are outside the initial verifier image's supported target.
 
-Responses are validated against Pydantic schemas; malformed JSON gets one schema-directed retry. Each attempted request reserves a conservative estimated cost before sending. No network retry is automatic after an unknown provider outcome. Timeouts and provider failures escalate. No hosted call was made during delivery verification.
+A failing baseline is required before a fix can pass. The verifier rejects patches that fail tests, lint, types or Bandit. Failed checks return feedback to the next diagnostic step. Three attempts maximum; repeated identical patches escalate sooner. CLI Phase 1 only proposes; the dashboard worker executes the complete bounded graph.
 
-## Architectural decisions
+## Draft GitHub PRs
 
-**Graph instead of a linear ad-hoc agent loop:** the transition table is explicit and bounded. Each node consumes persisted typed predecessor output. Phase one is acyclic; there is no correction loop to detect. Later verification cycles must carry attempt counters and repeat-state hashes before being introduced.
+Set `IRONCLAD_GITHUB_REPO=owner/repo` and a fine-grained `IRONCLAD_GITHUB_TOKEN` limited to that repository with contents and pull-request write permissions. The local checkout must match the intended target revision. Review a passing incident's diff and checks, confirm review, then create its draft PR. The remote file hashes are checked against the original diagnosis before publication. Changed code is rejected. No auto-merge exists.
 
-**Persistence:** SQLite WAL provides a zero-service local first phase. State is reconstructed from ordered immutable events. The unique `(run_id, seq)` key prevents duplicate steps. Run IDs represent independent submissions; repeated log submissions are not automatically deduplicated. Use one CLI writer per run. Concurrent multi-worker execution requires leases and atomic transition claims before production use.
+For CI ingestion, configure `/api/webhooks/github` with a high-entropy `IRONCLAD_WEBHOOK_SECRET` and check-run events. Signatures, repository scope and delivery IDs are checked. Duplicate deliveries reuse the run. CI head SHA is recorded; automatic checkout of arbitrary webhook revisions is deliberately not performed.
 
-**Redis:** `RedisBus` mirrors committed events to per-run Streams using sequence-derived IDs. Install `.[redis]`, instantiate `redis.Redis.from_url(...)`, and call `RedisBus(client).publish(event)` for events read from `Store`. It is an optional relay adapter, not yet a production worker transport. SQLite polling/replay is the default local event bus. PostgreSQL, pgvector, and durable worker dispatch are later-phase work; SQLite is an intentional runnable-first deviation.
+No co-author trailers or assistant attribution are generated by the application.
 
-**Retrieval:** bounded AST-level Python function/class chunks ranked by lexical overlap. Citations are validated against retrieved evidence. This is a baseline, not BM25/vector hybrid search. No embeddings or invented vector-search metrics are claimed.
+## Docker Compose
 
-**Cost:** all requests have output and call caps. Preflight reservations depend on accurate configured provider prices and conventional byte-tokenized input accounting. This is a conservative application estimate, not a billing guarantee; provider billing limits remain necessary for a hard financial ceiling. Demo mode costs nothing. Interrupted hosted runs escalate rather than silently refreshing their budget; a new run requires an explicit new invocation. A crash before the first committed event is a remaining accounting limitation.
-
-**Untrusted generated code:** phase one generates diffs and parses Python syntax; it never imports, runs, or installs target code. Docker execution with CPU, memory, network and time limits is not implemented yet and must precede autonomous verification. AST parsing is not a security sandbox.
-
-**Replay and trust:** replay displays recorded outputs and evidence without making new model calls. It reconstructs recorded agent steps, not a historical filesystem snapshot or hidden model reasoning. We persist concise evidence-based rationales, not private chain-of-thought.
-
-**Autonomy versus blast radius:** deny dot-directories, infrastructure, migrations, symlinks, credentials and lockfiles; restrict proposals to cited Python files and five files maximum. Require exact unique edit matches, syntactically valid output and a nonempty patch. The repository is never mutated. Human review and later isolated tests are required before using a proposal.
-
-## Tests
+Copy `.env.example` to `.env`, set the admin token, provider/GitHub credentials as needed, and `IRONCLAD_REPO_HOST` to the target repository's absolute host path. Then:
 
 ```bash
-python -m pytest --cov=ironclad --cov-report=term-missing
+docker build -f Dockerfile.sandbox -t ironclad-sandbox:local .
+docker compose up --build
+```
+
+The API binds localhost only. Shared state uses a volume. The worker has the Docker socket so it can launch restricted sibling sandboxes; **run this installation on a dedicated development machine or VM** because Docker socket access gives the worker control over the Docker host. Target-generated code never receives that socket, credentials, host network, or the full repository. Shared sandbox temp paths have the same absolute path in worker and host.
+
+Before exposing remotely, use a TLS reverse proxy, set `IRONCLAD_SECURE_COOKIE=1`, and keep installation credentials private. There is no multi-tenant authorization model.
+
+## Architecture
+
+```mermaid
+flowchart TD
+  A[Log or signed CI failure] --> B[Durable queue and Watcher]
+  B --> C[Diagnostician and cited evidence]
+  C --> D[Surgeon and scoped patch]
+  D --> E[Restricted Docker Verifier]
+  E -->|Failure within limits| C
+  E -->|Passing checks| F[Reporter and human review]
+  F --> G[Draft GitHub PR]
+  E -->|Budget or attempt cap| H[Escalation]
+```
+
+Every agent transition is recorded in an immutable event log. Reconnecting clients supply the last sequence number; the server sends subsequent events. Replay reads recorded outputs without invoking models or executing code. Concise evidence-based rationales are stored, not private model chain-of-thought.
+
+### Decisions and limits
+
+| Area | Implementation and trade-off |
+| --- | --- |
+| Graph | Explicit bounded transitions; no uncontrolled autonomous loop. Repair iterations are bounded and repeated diffs are detected. |
+| Durability | SQLite WAL is the zero-service default; `IRONCLAD_DATABASE_URL` enables PostgreSQL for event history, queue, settings and budget reservations. `IRONCLAD_REDIS_URL` enables durable typed Streams mirroring with catch-up. One worker per installation is supported. |
+| Retrieval | AST chunks ranked with BM25 and exact-symbol boosts. Optional pgvector embeddings combine with BM25 through reciprocal-rank fusion; stale indexed chunks are excluded. |
+| Model spend | Calls reserve conservative configured estimates in durable storage before network requests. Actual billing depends on provider prices/accounting; configure provider-side caps for a financial ceiling. |
+| Crash recovery | Recorded steps replay exactly. Interrupted executing jobs escalate instead of repeating unknown side effects. Resume does not reconstruct historical filesystem snapshots. |
+| Isolation | Fresh non-root, network-disabled, read-only containers with capability/PID/CPU/memory/time limits. No fallback to host execution. Docker itself remains a required trusted boundary. |
+| Review | Separate review confirmation and publication gates; only draft PRs. Existing PRs are reused. |
+| UI | Next.js 15 / React 19 / strict TypeScript and custom CSS. Static export is served by FastAPI. This replaces the proposed Tailwind/shadcn state-library stack to keep the initial installation smaller. TanStack Virtual renders incident rows efficiently; the current API caps the feed at 1,000 records. |
+| Observability | Structured event logs, authenticated Prometheus-format counters and optional per-step OpenTelemetry OTLP export. |
+
+## Repository map
+
+```text
+ironclad/         schemas, agents, event store, model adapter, sandbox,
+                  API, worker, review gates and GitHub publisher
+web/              Next.js dashboard and responsive design system
+tests/            unit, API, workflow, webhook and publication tests
+examples/         deliberately broken Python fixture and failure log
+design/           original shared design tokens
+docs/             phase notes, JSON schemas, validation and load results
+scripts/          localhost-only WebSocket fan-out test
+Dockerfile        dashboard + API/worker image
+Dockerfile.sandbox restricted verification tool image
+compose.yml       local API/worker deployment
+```
+
+## Validation
+
+```bash
 python -m ruff check ironclad tests
 python -m mypy ironclad
+python -m pytest --cov=ironclad --cov-report=term-missing
+cd web && npm run typecheck && npm run build
 ```
 
-Integration tests apply a generated diff only to a disposable fixture and run its actual tests. Additional tests cover immutable history, checkpoint recovery, terminal-run idempotency, path traversal, denied paths, symlinks, malformed edits, input policies and budget stops. `VALIDATION.md` records the actual checks run at delivery.
+See [VALIDATION.md](VALIDATION.md) for measured results and remaining verification limits. Docker and live provider/GitHub execution were not available for an end-to-end real-repository repair during development. Mocked integration tests establish program behaviour, not production security or a guarantee that generated fixes are correct.
 
-## Next phases
+The original broad acceptance targets—live Docker/service validation, full WCAG audit, sustained 500-dashboard workload and under-200ms live latency—must not be inferred from the current validation results. Service-backed and Docker smoke jobs are included in GitHub Actions.
 
-1. Add Verifier with fresh restricted Docker containers, baseline regression comparison, bounded correction attempts and escalation.
-2. Add PostgreSQL/pgvector, Redis workers with leases, provider request accounting and hardened redaction.
-3. Add FastAPI/WebSocket telemetry and Next.js mission-control UI using the included design tokens.
-4. Add authenticated GitHub webhooks and a restricted installation token for draft PR creation.
-5. Add the remaining replay/review/knowledge/settings screens, observability and load tests.
 
-The seven-screen dashboard, GitHub integration, live WebSockets, 500-client load target, 80% orchestration/guardrail coverage target and production security review are not claimed complete by this phase-one delivery.
+## Optional production services and semantic index
+
+```bash
+python -m pip install -e ".[production]"
+# Configure .env with a URL-safe IRONCLAD_POSTGRES_PASSWORD and embedding settings.
+docker compose -f compose.yml -f compose.production.yml up --build
+```
+
+Set `IRONCLAD_DATABASE_URL` for local Python use; Compose's production override sets it for API and worker. An optional pgvector index uses `IRONCLAD_EMBEDDING_KEY`, `IRONCLAD_EMBEDDING_MODEL`, `IRONCLAD_EMBEDDING_DIMENSIONS`, and the actual `IRONCLAD_EMBEDDING_USD_PER_MILLION`. Build explicitly:
+
+```bash
+python scripts/index_repo.py --repo /absolute/repo --budget 1.00
+```
+
+Embedding inputs are repository source. Index builds reserve an explicit bounded budget before every request. Runtime embedding retrieval shares incident budgets; standalone knowledge queries have a durable installation-wide reservation cap. Without embeddings, BM25 remains available. The index is replaced atomically; retrieval also rejects stale source digests.
+
+Optional `IRONCLAD_OTLP_ENDPOINT` exports agent spans using the run ID as trace ID. `IRONCLAD_REDIS_URL` mirrors committed messages into per-run Streams; the PostgreSQL/SQLite log remains authoritative when Redis is unavailable. This is one installation, not a distributed multi-tenant service.

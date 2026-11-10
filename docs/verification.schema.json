@@ -1,0 +1,43 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "baseline_failures": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Baseline Failures",
+      "type": "array"
+    },
+    "remaining_failures": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Remaining Failures",
+      "type": "array"
+    },
+    "checks": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "output": {
+      "title": "Output",
+      "type": "string"
+    }
+  },
+  "required": [
+    "passed",
+    "baseline_failures",
+    "remaining_failures",
+    "checks",
+    "output"
+  ],
+  "title": "Verification",
+  "type": "object"
+}

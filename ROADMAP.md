@@ -1,12 +1,22 @@
 # IRONCLAD delivery roadmap
 
-| Version | Phase | Status |
+| Branch | Delivery | Status |
 | --- | --- | --- |
-| v0.1.0-phase1 | Typed events, CLI diagnosis and guarded patch proposals | Complete |
-| v0.2.0-phase2 | Supervisor, isolated verification, bounded self-correction | Planned |
-| v0.3.0-phase3 | API, live telemetry, overview and agent graph | Planned |
-| v0.4.0-phase4 | Incident detail, trace waterfall and diff review | Planned |
-| v0.5.0-phase5 | Reporter, GitHub draft PR integration and settings | Planned |
-| v0.6.0-phase6 | Remaining screens, accessibility, observability and load tests | Planned |
+| phase-1 | Typed events, CLI diagnosis, guarded proposals | Implemented and tested |
+| phase-2 | Supervisor, Docker verifier, bounded reflection | Implemented; Docker runtime validation pending |
+| phase-3 | API, durable queue, streaming dashboard | Implemented and tested |
+| phase-4 | Incident inspection, replay, diff rationale | Implemented; visual/accessibility audit pending |
+| phase-5 | Review gate, draft PR adapter, signed webhooks | Implemented; real target integration validation pending |
+| phase-6 | Compose deployment, metrics, CI, documentation, fan-out test | Implemented with measured limits documented |
 
-Each completed phase receives its own conventional commits and annotated version tag. Later phases are not marked complete or published until implemented and validated. Phase 1 does not open PRs or execute target repository code.
+## Remaining original-spec work
+
+- Distributed worker leases and production Redis dispatch.
+- Broader provider retry/circuit-breaker policies beyond the bounded current adapters.
+- Full WCAG AA testing and paginated history beyond the current 1,000-record feed.
+- Actual Docker and hosted-model-to-GitHub end-to-end acceptance run.
+- Sustained 500-dashboard traffic and under-200ms live-event latency verification.
+
+The local application is usable; these original production requirements remain explicitly open. Phase branches are milestones, not claims that every broad acceptance criterion is complete.
+
+Phase 6 also includes PostgreSQL storage, optional pgvector/BM25 RRF retrieval, TanStack Virtual, Redis mirroring and OTLP spans. External services are covered by service-backed CI jobs; they were not available locally.

@@ -26,6 +26,10 @@ def main() -> None:
     while True:
         rid = store.claim()
         if rid:
+            from .schema import FleetPolicy
+
+            policy = FleetPolicy.model_validate(store.input(rid).get("policy", {}))
+            fleet.sandbox = DockerSandbox(policy.timeout_seconds)
             fleet.execute(rid)
             store.finish(rid)
         else:

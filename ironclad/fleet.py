@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from .knowledge import retrieve
 from .model import HostedModel
-from .repository import render_patch, retrieve
+from .repository import render_patch
 from .schema import (
     Agent,
     Diagnosis,
@@ -92,7 +93,15 @@ class Fleet:
                 if len(self.store.events(run_id)) + 4 > policy.max_steps:
                     raise ValueError("Graph step cap reached")
                 step = time.monotonic()
-                evidence = retrieve(repo, log, policy.max_input_chars - len(log))
+                evidence = retrieve(
+                    repo,
+                    log,
+                    policy.max_input_chars - len(log),
+                    self.store,
+                    run_id,
+                    policy.dollar_budget,
+                    policy.max_model_calls,
+                )
                 if model:
                     diagnosis = model.generate(
                         Diagnosis,

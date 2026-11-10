@@ -1,0 +1,35 @@
+# Optional override: docker compose -f compose.yml -f compose.production.yml up --build
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ironclad
+      POSTGRES_DB: ironclad
+      POSTGRES_PASSWORD: ${IRONCLAD_POSTGRES_PASSWORD:?Set a strong database password}
+    volumes: [postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U ironclad"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis:/data]
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      IRONCLAD_DATABASE_URL: postgresql://ironclad:${IRONCLAD_POSTGRES_PASSWORD}@postgres:5432/ironclad
+      IRONCLAD_REDIS_URL: redis://redis:6379/0
+  worker:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      IRONCLAD_DATABASE_URL: postgresql://ironclad:${IRONCLAD_POSTGRES_PASSWORD}@postgres:5432/ironclad
+      IRONCLAD_REDIS_URL: redis://redis:6379/0
+volumes:
+  postgres:
+  redis:
